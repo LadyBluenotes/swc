@@ -2,11 +2,17 @@ use swc_atoms::atom;
 use swc_common::Span;
 use swc_ecma_ast::*;
 
-use crate::{error::SyntaxError, input::Tokens, lexer::Token, Context, PResult, Parser};
+use crate::{
+    error::SyntaxError,
+    input::Tokens,
+    lexer::Token,
+    parser::{BoundaryContext, TypeContext},
+    Context, PResult, Parser,
+};
 
 impl<I: Tokens> Parser<I> {
     pub fn parse_module_item(&mut self) -> PResult<ModuleItem> {
-        self.do_inside_of_context(Context::TopLevel, |p| {
+        self.do_inside_of_boundary_context(BoundaryContext::TopLevel, |p| {
             p.parse_stmt_like(true, handle_import_export)
         })
     }
@@ -159,9 +165,7 @@ impl<I: Tokens> Parser<I> {
 
     fn parse_imported_binding(&mut self) -> PResult<Ident> {
         Ok(self
-            .do_outside_of_context(Context::InAsync.union(Context::InGenerator), |p| {
-                p.parse_binding_ident(false)
-            })?
+            .with_function_grammar(false, false, |p| p.parse_binding_ident(false))?
             .into())
     }
 
@@ -270,7 +274,7 @@ impl<I: Tokens> Parser<I> {
                         if possibly_orig_token == Token::As {
                             // `import { type as } from 'mod'`
                             if !self.input().cur().is_word() {
-                                if self.ctx().is_reserved_word(&possibly_orig_name.sym) {
+                                if self.word_is_reserved(&possibly_orig_name.sym) {
                                     syntax_error!(
                                         self,
                                         possibly_orig_name.span,
@@ -363,7 +367,7 @@ impl<I: Tokens> Parser<I> {
                 if self.input().syntax().flow() && orig_name.sym == *"default" {
                     self.emit_err(orig_name.span, SyntaxError::TS1003);
                 }
-                if self.ctx().is_reserved_word(&orig_name.sym)
+                if self.word_is_reserved(&orig_name.sym)
                     && !(self.input().syntax().flow() && (type_only || is_type_only))
                 {
                     syntax_error!(self, orig_name.span, SyntaxError::ReservedWordInImport)
@@ -403,7 +407,9 @@ impl<I: Tokens> Parser<I> {
     }
 
     pub(crate) fn parse_export(&mut self, mut decorators: Vec<Decorator>) -> PResult<ModuleDecl> {
-        if !self.ctx().contains(Context::Module) && self.ctx().contains(Context::TopLevel) {
+        if !self.ctx().contains(Context::Module)
+            && self.boundary_ctx().contains(BoundaryContext::TopLevel)
+        {
             // Switch to module mode
             let ctx = self.ctx() | Context::Module | Context::Strict;
             self.set_ctx(ctx);
@@ -1103,9 +1109,8 @@ fn handle_import_export<I: Tokens>(
     p: &mut Parser<I>,
     decorators: Vec<Decorator>,
 ) -> PResult<ModuleItem> {
-    if !p
-        .ctx()
-        .intersects(Context::TopLevel.union(Context::TsModuleBlock))
+    if !p.boundary_ctx().contains(BoundaryContext::TopLevel)
+        && !p.type_ctx().contains(TypeContext::TsModuleBlock)
     {
         syntax_error!(p, SyntaxError::NonTopLevelImportExport);
     }

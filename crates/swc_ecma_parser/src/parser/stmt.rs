@@ -112,9 +112,7 @@ impl<I: Tokens> Parser<I> {
         }
         .into());
 
-        if !self.ctx().contains(Context::InFunction)
-            && !self.input().syntax().allow_return_outside_function()
-        {
+        if !self.allows_return_stmt() && !self.input().syntax().allow_return_outside_function() {
             self.emit_err(self.span(start), SyntaxError::ReturnNotAllowed);
         }
 
@@ -178,11 +176,11 @@ impl<I: Tokens> Parser<I> {
             } else {
                 // Destructuring bindings require initializers, but
                 // typescript allows `declare` vars not to have initializers.
-                if self.ctx().contains(Context::InDeclare) {
+                if self.type_ctx().contains(TypeContext::InDeclare) {
                     None
                 } else if kind == VarDeclKind::Const
                     && !for_loop
-                    && !self.ctx().contains(Context::InDeclare)
+                    && !self.type_ctx().contains(TypeContext::InDeclare)
                 {
                     self.emit_err(
                         self.span(start),
@@ -283,9 +281,7 @@ impl<I: Tokens> Parser<I> {
             }
 
             let decl = if should_include_in {
-                self.do_inside_of_context(Context::IncludeInExpr, |p| {
-                    p.parse_var_declarator(for_loop, kind)
-                })
+                self.allow_in_expr(|p| p.parse_var_declarator(for_loop, kind))
             } else {
                 self.parse_var_declarator(for_loop, kind)
             }?;
@@ -361,7 +357,10 @@ impl<I: Tokens> Parser<I> {
             self.emit_err(self.span(start), SyntaxError::UsingDeclNotEnabled);
         }
 
-        if !self.ctx().contains(Context::AllowUsingDecl) {
+        if !self
+            .statement_ctx()
+            .contains(StatementContext::AllowUsingDecl)
+        {
             self.emit_err(self.span(start), SyntaxError::UsingDeclNotAllowed);
         }
 
@@ -388,8 +387,12 @@ impl<I: Tokens> Parser<I> {
     }
 
     pub(super) fn parse_for_head(&mut self) -> PResult<TempForHead> {
-        // let strict = self.ctx().contains(Context::Strict);
+        self.parse_for_head_with_await(false)
+    }
 
+    /// Keeps the iteration kind local to the loop head, not its nested
+    /// expressions.
+    pub(super) fn parse_for_head_with_await(&mut self, is_await: bool) -> PResult<TempForHead> {
         let cur = self.input().cur();
         if cur == Token::Const
             || cur == Token::Var
@@ -516,6 +519,16 @@ impl<I: Tokens> Parser<I> {
         if cur == Token::Of || cur == Token::In {
             let is_in = self.input().is(Token::In);
 
+            // The lookahead restriction matches the literal `async of` tokens,
+            // not an escaped identifier with the same decoded name.
+            if !is_in
+                && !is_await
+                && init.is_ident_ref_to("async")
+                && self.input.iter.read_string(init.span()) == "async"
+            {
+                self.emit_err(init.span(), SyntaxError::TS1106);
+            }
+
             let pat = self.reparse_expr_as_pat(PatType::AssignPat, init)?;
 
             // for ({} in foo) is invalid
@@ -551,20 +564,18 @@ impl<I: Tokens> Parser<I> {
         }
         expect!(self, Token::LParen);
 
-        let head = self.do_inside_of_context(Context::ForLoopInit, |p| {
-            if await_token.is_some() {
-                p.do_inside_of_context(Context::ForAwaitLoopInit, Self::parse_for_head)
-            } else {
-                p.do_outside_of_context(Context::ForAwaitLoopInit, Self::parse_for_head)
-            }
-        })?;
+        let head = if await_token.is_some() {
+            self.parse_for_head_with_await(true)?
+        } else {
+            self.parse_for_head()?
+        };
 
         expect!(self, Token::RParen);
 
         let body = self
-            .do_inside_of_context(
-                Context::IsBreakAllowed.union(Context::IsContinueAllowed),
-                |p| p.do_outside_of_context(Context::TopLevel, Self::parse_stmt),
+            .do_inside_of_statement_context(
+                StatementContext::IsBreakAllowed.union(StatementContext::IsContinueAllowed),
+                |p| p.do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt),
             )
             .map(Box::new)?;
 
@@ -598,10 +609,7 @@ impl<I: Tokens> Parser<I> {
                 .into()
             }
             TempForHead::ForOf { left, right } => {
-                if await_token.is_some()
-                    && self.syntax().flow()
-                    && !self.ctx().contains(Context::InAsync)
-                {
+                if await_token.is_some() && self.syntax().flow() && !self.includes_await_expr() {
                     self.emit_err(self.span(start), SyntaxError::AwaitForStmt);
                 }
 
@@ -646,7 +654,7 @@ impl<I: Tokens> Parser<I> {
         expect!(self, Token::LParen);
 
         let test = self
-            .do_outside_of_context(Context::IgnoreElseClause, |p| {
+            .do_outside_of_statement_context(StatementContext::IgnoreElseClause, |p| {
                 p.allow_in_expr(|p| p.parse_expr())
             })
             .map_err(|err| {
@@ -669,10 +677,9 @@ impl<I: Tokens> Parser<I> {
                 // if !self.ctx().contains(Context::Strict) && self.input().is(Token::FUNCTION)
                 // {     // TODO: report error?
                 // }
-                self.do_outside_of_context(
-                    Context::IgnoreElseClause.union(Context::TopLevel),
-                    Self::parse_stmt,
-                )
+                self.do_outside_of_statement_context(StatementContext::IgnoreElseClause, |p| {
+                    p.do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt)
+                })
                 .map(Box::new)
             })?
         };
@@ -680,7 +687,10 @@ impl<I: Tokens> Parser<I> {
         // We parse `else` branch iteratively, to avoid stack overflow
         // See https://github.com/swc-project/swc/pull/3961
 
-        let alt = if self.ctx().contains(Context::IgnoreElseClause) {
+        let alt = if self
+            .statement_ctx()
+            .contains(StatementContext::IgnoreElseClause)
+        {
             None
         } else {
             let mut cur = None;
@@ -692,17 +702,24 @@ impl<I: Tokens> Parser<I> {
 
                 if !self.input().is(Token::If) {
                     // As we eat `else` above, we need to parse statement once.
-                    let last = self.do_outside_of_context(
-                        Context::IgnoreElseClause.union(Context::TopLevel),
-                        Self::parse_stmt,
+                    let last = self.do_outside_of_statement_context(
+                        StatementContext::IgnoreElseClause,
+                        |p| {
+                            p.do_outside_of_boundary_context(
+                                BoundaryContext::TopLevel,
+                                Self::parse_stmt,
+                            )
+                        },
                     )?;
                     break Some(last);
                 }
 
                 // We encountered `else if`
 
-                let alt =
-                    self.do_inside_of_context(Context::IgnoreElseClause, Self::parse_if_stmt)?;
+                let alt = self.do_inside_of_statement_context(
+                    StatementContext::IgnoreElseClause,
+                    Self::parse_if_stmt,
+                )?;
 
                 match &mut cur {
                     Some(cur) => {
@@ -772,9 +789,7 @@ impl<I: Tokens> Parser<I> {
         expect!(self, Token::RParen);
 
         let body = self
-            .do_inside_of_context(Context::InFunction, |p| {
-                p.do_outside_of_context(Context::TopLevel, Self::parse_stmt)
-            })
+            .do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt)
             .map(Box::new)?;
 
         let span = self.span(start);
@@ -791,9 +806,9 @@ impl<I: Tokens> Parser<I> {
         expect!(self, Token::RParen);
 
         let body = self
-            .do_inside_of_context(
-                Context::IsBreakAllowed.union(Context::IsContinueAllowed),
-                |p| p.do_outside_of_context(Context::TopLevel, Self::parse_stmt),
+            .do_inside_of_statement_context(
+                StatementContext::IsBreakAllowed.union(StatementContext::IsContinueAllowed),
+                |p| p.do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt),
             )
             .map(Box::new)?;
 
@@ -809,7 +824,7 @@ impl<I: Tokens> Parser<I> {
             let type_ann_start = self.cur_pos();
 
             if self.syntax().typescript() && self.input_mut().eat(Token::Colon) {
-                let ty = self.do_inside_of_context(Context::InType, Self::parse_ts_type)?;
+                let ty = self.with_type_lexing(Context::InType, true, Self::parse_ts_type)?;
                 // self.emit_err(ty.span(), SyntaxError::TS1196);
 
                 match &mut pat {
@@ -842,9 +857,9 @@ impl<I: Tokens> Parser<I> {
         self.assert_and_bump(Token::Do);
 
         let body = self
-            .do_inside_of_context(
-                Context::IsBreakAllowed.union(Context::IsContinueAllowed),
-                |p| p.do_outside_of_context(Context::TopLevel, Self::parse_stmt),
+            .do_inside_of_statement_context(
+                StatementContext::IsBreakAllowed.union(StatementContext::IsContinueAllowed),
+                |p| p.do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt),
             )
             .map(Box::new)?;
 
@@ -864,8 +879,8 @@ impl<I: Tokens> Parser<I> {
     }
 
     fn parse_labelled_stmt(&mut self, l: Ident) -> PResult<Stmt> {
-        self.do_inside_of_context(Context::IsBreakAllowed, |p| {
-            p.do_outside_of_context(Context::AllowUsingDecl, |p| {
+        self.do_inside_of_statement_context(StatementContext::IsBreakAllowed, |p| {
+            p.do_outside_of_statement_context(StatementContext::AllowUsingDecl, |p| {
                 let start = l.span.lo();
 
                 let mut errors = Vec::new();
@@ -892,7 +907,7 @@ impl<I: Tokens> Parser<I> {
 
                     f.into()
                 } else {
-                    p.do_outside_of_context(Context::TopLevel, Self::parse_stmt)?
+                    p.do_outside_of_boundary_context(BoundaryContext::TopLevel, Self::parse_stmt)?
                 });
 
                 for err in errors {
@@ -921,7 +936,7 @@ impl<I: Tokens> Parser<I> {
 
         expect!(self, Token::LBrace);
 
-        let stmts = self.do_outside_of_context(Context::TopLevel, |p| {
+        let stmts = self.do_outside_of_boundary_context(BoundaryContext::TopLevel, |p| {
             p.parse_stmt_block_body(allow_directives, Some(Token::RBrace))
         })?;
 
@@ -998,7 +1013,7 @@ impl<I: Tokens> Parser<I> {
 
         expect!(self, Token::LBrace);
 
-        self.do_inside_of_context(Context::IsBreakAllowed, |p| {
+        self.do_inside_of_statement_context(StatementContext::IsBreakAllowed, |p| {
             while {
                 let cur = p.input().cur();
                 cur == Token::Case || cur == Token::Default
@@ -1023,9 +1038,10 @@ impl<I: Tokens> Parser<I> {
                     let cur = p.input().cur();
                     !(cur == Token::Case || cur == Token::Default || cur == Token::RBrace)
                 } {
-                    cons.push(
-                        p.do_outside_of_context(Context::TopLevel, Self::parse_stmt_list_item)?,
-                    );
+                    cons.push(p.do_outside_of_boundary_context(
+                        BoundaryContext::TopLevel,
+                        Self::parse_stmt_list_item,
+                    )?);
                 }
 
                 cases.push(SwitchCase {
@@ -1877,8 +1893,8 @@ impl<I: Tokens> Parser<I> {
             return handle_import_export(self, decorators);
         }
 
-        self.do_outside_of_context(Context::WillExpectColonForCond, |p| {
-            p.do_inside_of_context(Context::AllowUsingDecl, |p| {
+        self.do_outside_of_type_context(TypeContext::WillExpectColonForCond, |p| {
+            p.do_inside_of_statement_context(StatementContext::AllowUsingDecl, |p| {
                 p.parse_stmt_internal(start, include_decl, decorators)
             })
         })
@@ -1912,7 +1928,7 @@ impl<I: Tokens> Parser<I> {
                 .map(Stmt::from);
         }
 
-        let top_level = self.ctx().contains(Context::TopLevel);
+        let top_level = self.boundary_ctx().contains(BoundaryContext::TopLevel);
 
         let cur = self.input().cur();
         if self.is_flow_match_keyword() {
@@ -1927,27 +1943,26 @@ impl<I: Tokens> Parser<I> {
             // Only `await using` needs a statement-level context error.
             let handled_by_explicit_program = top_level
                 && self.program_parse_mode == ProgramParseMode::None
-                && (self
-                    .ctx()
-                    .intersects(Context::Module.union(Context::CanBeModule))
+                && (self.ctx().contains(Context::Module)
+                    || self.boundary_ctx().contains(BoundaryContext::CanBeModule)
                     || is_await_using);
             if handled_by_explicit_program {
                 self.mark_found_module_item();
-                if !self.ctx().contains(Context::CanBeModule) {
+                if !self.boundary_ctx().contains(BoundaryContext::CanBeModule) {
                     self.emit_err(self.input().cur_span(), SyntaxError::TopLevelAwaitInScript);
                 }
             }
 
             if is_await_using {
                 let eaten_await = Some(self.input().cur_pos());
+                self.check_current_token_escape()?;
                 if self.can_classify_module() {
                     self.mark_found_module_item();
-                } else if !self
-                    .ctx()
-                    .intersects(Context::InAsync.union(Context::Module))
+                } else if !self.includes_await_expr()
+                    && !self.ctx().contains(Context::Module)
                     && !handled_by_explicit_program
                 {
-                    let error = if self.ctx().contains(Context::InFunction) {
+                    let error = if self.syntax_context == SyntaxContext::FunctionBody {
                         SyntaxError::AwaitInFunction
                     } else {
                         SyntaxError::TopLevelAwaitInScript
@@ -1981,10 +1996,16 @@ impl<I: Tokens> Parser<I> {
             if is_break {
                 if label.is_some() && !self.state().labels.contains(&label.as_ref().unwrap().sym) {
                     self.emit_err(span, SyntaxError::TS1116);
-                } else if !self.ctx().contains(Context::IsBreakAllowed) {
+                } else if !self
+                    .statement_ctx()
+                    .contains(StatementContext::IsBreakAllowed)
+                {
                     self.emit_err(span, SyntaxError::TS1105);
                 }
-            } else if !self.ctx().contains(Context::IsContinueAllowed) {
+            } else if !self
+                .statement_ctx()
+                .contains(StatementContext::IsContinueAllowed)
+            {
                 self.emit_err(span, SyntaxError::TS1115);
             } else if label.is_some() && !self.state().labels.contains(&label.as_ref().unwrap().sym)
             {
@@ -2103,7 +2124,9 @@ impl<I: Tokens> Parser<I> {
             return Ok(self.parse_ts_enum_decl(start, false)?.into());
         } else if cur == Token::LBrace {
             return self
-                .do_inside_of_context(Context::AllowUsingDecl, |p| p.parse_block(false))
+                .do_inside_of_statement_context(StatementContext::AllowUsingDecl, |p| {
+                    p.parse_block(false)
+                })
                 .map(Stmt::Block);
         } else if cur == Token::Semi {
             self.bump();
