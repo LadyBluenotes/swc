@@ -2006,7 +2006,8 @@ impl<'a> Lexer<'a> {
         let mut first = true;
         let mut has_escape = false;
 
-        let mut buf = String::with_capacity(16);
+        // Unescaped Unicode identifiers can borrow the source just like ASCII ones.
+        let mut buf = String::new();
         loop {
             if let Some(c) = self.input().cur_as_ascii() {
                 if Ident::is_valid_ascii_continue(c) {
@@ -2021,6 +2022,9 @@ impl<'a> Lexer<'a> {
                 // unicode escape
                 if c == b'\\' {
                     first = false;
+                    if !has_escape {
+                        buf.reserve(16);
+                    }
                     has_escape = true;
                     let start = self.cur_pos();
                     self.bump(1); // `\`
