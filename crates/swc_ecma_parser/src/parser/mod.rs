@@ -51,7 +51,8 @@ mod util;
 mod verifier;
 
 use self::context::{
-    BoundaryContext, GrammarContext, StatementContext, StatementGrammar, SyntaxContext, TypeContext,
+    BoundaryContext, FunctionKind, GrammarContext, StatementContext, StatementGrammar,
+    SyntaxContext, TypeContext,
 };
 
 pub type PResult<T> = Result<T, crate::error::Error>;

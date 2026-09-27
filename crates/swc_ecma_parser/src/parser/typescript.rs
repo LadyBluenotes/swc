@@ -9,7 +9,9 @@ use crate::{
     error::SyntaxError,
     input::Tokens,
     lexer::Token,
-    parser::{util::IsSimpleParameterList, BoundaryContext, GrammarContext, TypeContext},
+    parser::{
+        util::IsSimpleParameterList, BoundaryContext, FunctionKind, GrammarContext, TypeContext,
+    },
     Context, PResult, Parser,
 };
 
@@ -453,7 +455,13 @@ impl<I: Tokens> Parser<I> {
         }
         let return_type = self.parse_flow_component_renders_ann()?;
 
-        let body = self.parse_fn_block_body(false, false, false, true)?;
+        let body = self.parse_fn_block_body(
+            FunctionKind::Function {
+                is_async: false,
+                is_generator: false,
+            },
+            true,
+        )?;
         if self.syntax().flow()
             && body.is_none()
             && !self.type_ctx().contains(TypeContext::InDeclare)
@@ -5298,9 +5306,7 @@ impl<I: Tokens> Parser<I> {
                 let is_async = true;
                 p.record_await_in_arrow_params(&params);
                 let body = p.parse_fn_block_or_expr_body(
-                    true,
-                    false,
-                    true,
+                    FunctionKind::Arrow { is_async: true },
                     params.is_simple_parameter_list(),
                 )?;
                 Ok(Some(ArrowExpr {

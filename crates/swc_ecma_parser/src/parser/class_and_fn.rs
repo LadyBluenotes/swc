@@ -11,7 +11,8 @@ use crate::{
     parser::{
         state::State,
         util::{is_ts_ambient_initializer, IsInvalidClassName, IsSimpleParameterList},
-        BoundaryContext, GrammarContext, StatementContext, SyntaxContext, TypeContext,
+        BoundaryContext, FunctionKind, GrammarContext, StatementContext, SyntaxContext,
+        TypeContext,
     },
     Context, PResult, Parser,
 };
@@ -430,9 +431,10 @@ impl<I: Tokens> Parser<I> {
             }
 
             let body: Option<_> = p.parse_fn_block_body(
-                is_async,
-                is_generator,
-                false,
+                FunctionKind::Function {
+                    is_async,
+                    is_generator,
+                },
                 params.is_simple_parameter_list(),
             )?;
 
@@ -742,17 +744,13 @@ impl<I: Tokens> Parser<I> {
         }
     }
 
-    pub(crate) fn parse_fn_block_or_expr_body(
+    pub(super) fn parse_fn_block_or_expr_body(
         &mut self,
-        is_async: bool,
-        is_generator: bool,
-        is_arrow_function: bool,
+        kind: FunctionKind,
         is_simple_parameter_list: bool,
     ) -> PResult<Box<ArrowFunctionBody>> {
         self.parse_fn_body(
-            is_async,
-            is_generator,
-            is_arrow_function,
+            kind,
             is_simple_parameter_list,
             |p, is_simple_parameter_list| {
                 if p.input().is(Token::LBrace) {
@@ -779,9 +777,7 @@ impl<I: Tokens> Parser<I> {
 
     fn parse_fn_body<T>(
         &mut self,
-        is_async: bool,
-        is_generator: bool,
-        is_arrow_function: bool,
+        kind: FunctionKind,
         is_simple_parameter_list: bool,
         f: impl FnOnce(&mut Self, bool) -> PResult<T>,
     ) -> PResult<T> {
@@ -803,34 +799,26 @@ impl<I: Tokens> Parser<I> {
             self.emit_err(self.input().cur_span(), SyntaxError::TS1183);
         }
 
-        let f_with_generator_context = |p: &mut Self| {
-            let f_with_inside_non_arrow_fn_scope = |p: &mut Self| {
-                let f_with_new_state = |p: &mut Self| {
-                    let mut p = p.with_state(State::default());
-                    f(&mut p, is_simple_parameter_list)
-                };
-
-                if is_arrow_function
-                    && !p
-                        .boundary_ctx()
-                        .contains(BoundaryContext::InsideNonArrowFunctionScope)
-                {
-                    p.do_outside_of_boundary_context(
-                        BoundaryContext::InsideNonArrowFunctionScope,
-                        f_with_new_state,
-                    )
-                } else {
-                    p.do_inside_of_boundary_context(
-                        BoundaryContext::InsideNonArrowFunctionScope,
-                        f_with_new_state,
-                    )
-                }
+        let f_with_function_scope = |p: &mut Self| {
+            let f_with_new_state = |p: &mut Self| {
+                let mut p = p.with_state(State::default());
+                f(&mut p, is_simple_parameter_list)
             };
 
-            if is_generator {
-                p.with_yield_expr(true, f_with_inside_non_arrow_fn_scope)
+            if kind.is_arrow()
+                && !p
+                    .boundary_ctx()
+                    .contains(BoundaryContext::InsideNonArrowFunctionScope)
+            {
+                p.do_outside_of_boundary_context(
+                    BoundaryContext::InsideNonArrowFunctionScope,
+                    f_with_new_state,
+                )
             } else {
-                p.with_yield_expr(false, f_with_inside_non_arrow_fn_scope)
+                p.do_inside_of_boundary_context(
+                    BoundaryContext::InsideNonArrowFunctionScope,
+                    f_with_new_state,
+                )
             }
         };
 
@@ -842,11 +830,11 @@ impl<I: Tokens> Parser<I> {
                         p.do_outside_of_statement_context(
                             StatementContext::IsBreakAllowed | StatementContext::IsContinueAllowed,
                             |p| {
-                                if is_async {
-                                    p.with_await_expr(true, f_with_generator_context)
-                                } else {
-                                    p.with_await_expr(false, f_with_generator_context)
-                                }
+                                p.with_function_grammar(
+                                    kind.is_generator(),
+                                    kind.is_async(),
+                                    f_with_function_scope,
+                                )
                             },
                         )
                     },
@@ -857,15 +845,11 @@ impl<I: Tokens> Parser<I> {
 
     pub(super) fn parse_fn_block_body(
         &mut self,
-        is_async: bool,
-        is_generator: bool,
-        is_arrow_function: bool,
+        kind: FunctionKind,
         is_simple_parameter_list: bool,
     ) -> PResult<Option<FunctionBody>> {
         self.parse_fn_body(
-            is_async,
-            is_generator,
-            is_arrow_function,
+            kind,
             is_simple_parameter_list,
             |p, is_simple_parameter_list| {
                 #[cfg(feature = "tsrx")]
@@ -1436,9 +1420,10 @@ impl<I: Tokens> Parser<I> {
                             }
 
                             let body = p.parse_fn_block_body(
-                                false,
-                                false,
-                                false,
+                                FunctionKind::Function {
+                                    is_async: false,
+                                    is_generator: false,
+                                },
                                 params.is_simple_parameter_list(),
                             )?;
 

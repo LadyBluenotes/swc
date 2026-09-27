@@ -1,3 +1,33 @@
+/// Function-body grammar and lexical-scope behavior. Arrows cannot be
+/// generators and inherit the enclosing non-arrow function scope.
+#[derive(Clone, Copy)]
+pub(super) enum FunctionKind {
+    Function { is_async: bool, is_generator: bool },
+    Arrow { is_async: bool },
+}
+
+impl FunctionKind {
+    pub(super) fn is_async(self) -> bool {
+        match self {
+            Self::Function { is_async, .. } | Self::Arrow { is_async } => is_async,
+        }
+    }
+
+    pub(super) fn is_generator(self) -> bool {
+        matches!(
+            self,
+            Self::Function {
+                is_generator: true,
+                ..
+            }
+        )
+    }
+
+    pub(super) fn is_arrow(self) -> bool {
+        matches!(self, Self::Arrow { .. })
+    }
+}
+
 /// The grammar production accepted at a statement entry point.
 /// Unlike `StatementContext`, this is local to the production, not inherited
 /// control-flow permission. Import/export handling remains with the caller.

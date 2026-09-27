@@ -2728,9 +2728,7 @@ impl<I: Tokens> Parser<I> {
                 self.record_await_in_arrow_params(&params);
 
                 let body: Box<ArrowFunctionBody> = self.parse_fn_block_or_expr_body(
-                    false,
-                    false,
-                    true,
+                    FunctionKind::Arrow { is_async: false },
                     params.is_simple_parameter_list(),
                 )?;
                 let span = self.span(start);
@@ -2824,8 +2822,12 @@ impl<I: Tokens> Parser<I> {
                 let is_simple = paren_items
                     .iter()
                     .all(AssignTargetOrSpread::is_simple_parameter);
-                let body: Box<ArrowFunctionBody> =
-                    p.parse_fn_block_or_expr_body(async_span.is_some(), false, true, is_simple)?;
+                let body: Box<ArrowFunctionBody> = p.parse_fn_block_or_expr_body(
+                    FunctionKind::Arrow {
+                        is_async: async_span.is_some(),
+                    },
+                    is_simple,
+                )?;
 
                 if !p.input().is(Token::Colon) {
                     trace_cur!(p, parse_arrow_in_cond__fail);
@@ -2924,9 +2926,9 @@ impl<I: Tokens> Parser<I> {
             self.emit_pending_async_arrow_param_await(pending_await);
 
             let body: Box<ArrowFunctionBody> = self.parse_fn_block_or_expr_body(
-                async_span.is_some(),
-                false,
-                true,
+                FunctionKind::Arrow {
+                    is_async: async_span.is_some(),
+                },
                 params.is_simple_parameter_list(),
             )?;
             let arrow_expr = ArrowExpr {
@@ -3138,9 +3140,7 @@ impl<I: Tokens> Parser<I> {
                     expect!(p, Token::Arrow);
                     p.record_await_in_arrow_params(&params);
                     let body = p.parse_fn_block_or_expr_body(
-                        true,
-                        false,
-                        true,
+                        FunctionKind::Arrow { is_async: true },
                         params.is_simple_parameter_list(),
                     )?;
 
@@ -3162,9 +3162,7 @@ impl<I: Tokens> Parser<I> {
                 p.bump();
                 p.record_await_in_arrow_params(&params);
                 let body = p.parse_fn_block_or_expr_body(
-                    false,
-                    false,
-                    true,
+                    FunctionKind::Arrow { is_async: false },
                     params.is_simple_parameter_list(),
                 )?;
 
