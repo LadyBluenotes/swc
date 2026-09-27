@@ -14,7 +14,7 @@ use crate::{
         BoundaryContext, FunctionKind, GrammarContext, StatementContext, SyntaxContext,
         TypeContext,
     },
-    Context, PResult, Parser,
+    PResult, Parser,
 };
 
 struct MakeMethodArgs {
@@ -57,7 +57,7 @@ fn parse_ts_this_param<I: Tokens>(p: &mut Parser<I>) -> PResult<Option<Box<TsThi
     let type_ann = p.try_parse_ts_type_ann()?;
     if is_flow
         && type_ann.is_none()
-        && !p.ctx().contains(Context::InType)
+        && !p.type_ctx().contains(TypeContext::InType)
         && !p.type_ctx().contains(TypeContext::InDeclare)
     {
         p.emit_err(this_span, SyntaxError::TS1003);
@@ -130,9 +130,7 @@ impl<I: Tokens> Parser<I> {
 
     fn parse_maybe_decorator_args(&mut self, expr: Box<Expr>) -> PResult<Box<Expr>> {
         let type_args = if self.input().syntax().typescript() && self.input().is(Token::Lt) {
-            let ret = self.parse_ts_type_args()?;
-            self.assert_and_bump(Token::Gt);
-            Some(ret)
+            Some(self.parse_ts_type_args()?)
         } else {
             None
         };
@@ -287,7 +285,6 @@ impl<I: Tokens> Parser<I> {
                 // but it's a super class with type params, for example, in JSX.
                 if self.syntax().typescript() && self.input().is(Token::Lt) {
                     let ret = self.parse_ts_type_args()?;
-                    self.assert_and_bump(Token::Gt);
                     Ok((super_class, Some(ret)))
                 } else {
                     Ok((super_class, None))
