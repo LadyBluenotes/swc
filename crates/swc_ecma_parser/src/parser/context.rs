@@ -1,3 +1,19 @@
+/// The grammar production accepted at a statement entry point.
+/// Unlike `StatementContext`, this is local to the production, not inherited
+/// control-flow permission. Import/export handling remains with the caller.
+#[derive(Clone, Copy)]
+pub(super) enum StatementGrammar {
+    Statement,
+    StatementListItem,
+    ModuleItem,
+}
+
+impl StatementGrammar {
+    pub(super) fn permits_declaration(self) -> bool {
+        matches!(self, Self::StatementListItem | Self::ModuleItem)
+    }
+}
+
 bitflags::bitflags! {
     /// The active values of ECMAScript grammatical parameters.
     ///

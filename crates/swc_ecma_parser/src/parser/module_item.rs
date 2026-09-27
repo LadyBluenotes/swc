@@ -6,14 +6,14 @@ use crate::{
     error::SyntaxError,
     input::Tokens,
     lexer::Token,
-    parser::{BoundaryContext, TypeContext},
+    parser::{BoundaryContext, StatementGrammar, TypeContext},
     Context, PResult, Parser,
 };
 
 impl<I: Tokens> Parser<I> {
     pub fn parse_module_item(&mut self) -> PResult<ModuleItem> {
         self.do_inside_of_boundary_context(BoundaryContext::TopLevel, |p| {
-            p.parse_stmt_like(true, handle_import_export)
+            p.parse_stmt_like(StatementGrammar::ModuleItem, handle_import_export)
         })
     }
 
@@ -22,7 +22,12 @@ impl<I: Tokens> Parser<I> {
         allow_directives: bool,
         end: Option<Token>,
     ) -> PResult<Vec<ModuleItem>> {
-        self.parse_block_body(allow_directives, end, handle_import_export)
+        self.parse_block_body(
+            StatementGrammar::ModuleItem,
+            allow_directives,
+            end,
+            handle_import_export,
+        )
     }
 
     /// Parses attributes shared by imports and re-exports. Only the legacy

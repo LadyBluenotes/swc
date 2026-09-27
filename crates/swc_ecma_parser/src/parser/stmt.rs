@@ -627,7 +627,7 @@ impl<I: Tokens> Parser<I> {
 
     pub fn parse_stmt(&mut self) -> PResult<Stmt> {
         trace_cur!(self, parse_stmt);
-        self.parse_stmt_like(false, handle_import_export)
+        self.parse_stmt_like(StatementGrammar::Statement, handle_import_export)
     }
 
     /// Utility function used to parse large if else statements iteratively.
@@ -1867,14 +1867,14 @@ impl<I: Tokens> Parser<I> {
     /// Parse a statement and maybe a declaration.
     pub fn parse_stmt_list_item(&mut self) -> PResult<Stmt> {
         trace_cur!(self, parse_stmt_list_item);
-        self.parse_stmt_like(true, handle_import_export)
+        self.parse_stmt_like(StatementGrammar::StatementListItem, handle_import_export)
     }
 
     /// Parse a statement, declaration or module item.
     #[inline(always)]
-    pub(crate) fn parse_stmt_like<Type: From<Stmt>>(
+    pub(super) fn parse_stmt_like<Type: From<Stmt>>(
         &mut self,
-        include_decl: bool,
+        grammar: StatementGrammar,
         handle_import_export: impl Fn(&mut Self, Vec<Decorator>) -> PResult<Type>,
     ) -> PResult<Type> {
         trace_cur!(self, parse_stmt_like);
@@ -1895,7 +1895,7 @@ impl<I: Tokens> Parser<I> {
 
         self.do_outside_of_type_context(TypeContext::WillExpectColonForCond, |p| {
             p.do_inside_of_statement_context(StatementContext::AllowUsingDecl, |p| {
-                p.parse_stmt_internal(start, include_decl, decorators)
+                p.parse_stmt_internal(start, grammar, decorators)
             })
         })
         .map(From::from)
@@ -1905,10 +1905,12 @@ impl<I: Tokens> Parser<I> {
     fn parse_stmt_internal(
         &mut self,
         start: BytePos,
-        include_decl: bool,
+        grammar: StatementGrammar,
         decorators: Vec<Decorator>,
     ) -> PResult<Stmt> {
         trace_cur!(self, parse_stmt_internal);
+
+        let include_decl = grammar.permits_declaration();
 
         let is_typescript = self.input().syntax().typescript();
 
@@ -2226,11 +2228,17 @@ impl<I: Tokens> Parser<I> {
         allow_directives: bool,
         end: Option<Token>,
     ) -> PResult<Vec<Stmt>> {
-        self.parse_block_body(allow_directives, end, handle_import_export)
+        self.parse_block_body(
+            StatementGrammar::StatementListItem,
+            allow_directives,
+            end,
+            handle_import_export,
+        )
     }
 
-    pub(crate) fn parse_block_body<Type: From<Stmt>>(
+    pub(super) fn parse_block_body<Type: From<Stmt>>(
         &mut self,
+        grammar: StatementGrammar,
         allow_directives: bool,
         end: Option<Token>,
         handle_import_export: impl Fn(&mut Self, Vec<Decorator>) -> PResult<Type>,
@@ -2265,12 +2273,12 @@ impl<I: Tokens> Parser<I> {
                         break;
                     }
 
-                    let stmt = p.parse_stmt_like(true, &handle_import_export)?;
+                    let stmt = p.parse_stmt_like(grammar, &handle_import_export)?;
                     stmts.push(stmt);
                 }
             } else {
                 while p.input().cur() != Token::Eof {
-                    let stmt = p.parse_stmt_like(true, &handle_import_export)?;
+                    let stmt = p.parse_stmt_like(grammar, &handle_import_export)?;
                     stmts.push(stmt);
                 }
             }
