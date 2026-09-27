@@ -2645,10 +2645,12 @@ impl<I: Tokens> Parser<I> {
 
         if self.input().syntax().flow() && self.type_ctx().contains(TypeContext::InType) {
             let list = self.parse_parameter_list(|p, index| {
-                if let Some(param) =
-                    p.try_parse_ts(|p| p.try_parse_flow_anon_signature_param(index))
-                {
-                    return Ok(param);
+                if p.flow_starts_like_anon_signature_param() {
+                    if let Some(param) =
+                        p.try_parse_ts(|p| p.try_parse_flow_anon_signature_param(index))
+                    {
+                        return Ok(param);
+                    }
                 }
                 let pat_start = p.cur_pos();
                 let pat = if p.input_mut().eat(Token::DotDotDot) {
@@ -3239,6 +3241,12 @@ impl<I: Tokens> Parser<I> {
         cur.is_word() && peek!(self).is_some_and(|peek| peek == Token::Lt || peek == Token::LShift)
     }
 
+    /// Reject named parameters before saving a speculative parser checkpoint.
+    /// Rest parameters still need speculation after consuming the spread token.
+    fn flow_starts_like_anon_signature_param(&mut self) -> bool {
+        self.input().is(Token::DotDotDot) || self.flow_starts_like_anon_signature_param_type()
+    }
+
     fn try_parse_flow_anon_signature_param(&mut self, index: usize) -> PResult<Option<TsFnParam>> {
         if !self.input().syntax().flow() || !self.type_ctx().contains(TypeContext::InType) {
             return Ok(None);
@@ -3279,6 +3287,10 @@ impl<I: Tokens> Parser<I> {
         index: usize,
     ) -> PResult<Option<Pat>> {
         if !self.input().syntax().flow() || !self.type_ctx().contains(TypeContext::InDeclare) {
+            return Ok(None);
+        }
+
+        if !self.flow_starts_like_anon_signature_param() {
             return Ok(None);
         }
 
